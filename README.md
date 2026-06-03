@@ -12,7 +12,7 @@ https://github.com/chidori-beni/ST-ChatPresetBind
 ## 使用
 
 1. 打开聊天窗口，调好预设和所有开关
-2. 点顶部 🧩 扩展菜单 → **聊天预设绑定**
+2. 点输入框左侧 扩展菜单（魔术棒） → **聊天预设绑定**
 3. 点「**绑定当前配置**」
 4. 之后切换回此聊天，自动恢复 ✓
 
@@ -27,7 +27,3 @@ https://github.com/chidori-beni/ST-ChatPresetBind
 | 生成参数 | 温度、top_p 等 |
 
 三项可在面板内分别勾选，按需保存。
-
----
-
-*by chidori · 2025*
