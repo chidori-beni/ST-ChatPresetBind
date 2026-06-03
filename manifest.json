@@ -1,0 +1,12 @@
+{
+  "display_name": "聊天预设绑定 · Chat Preset Bind",
+  "loading_order": 20,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "chidori",
+  "version": "1.0.1",
+  "homePage": "https://github.com/chidori-beni/ST-ChatPresetBind",
+  "auto_update": true
+}
