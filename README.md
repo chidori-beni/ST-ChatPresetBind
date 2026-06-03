@@ -4,7 +4,7 @@
 
 ## 安装
 
-扩展管理器 → 下载扩展 → 粘贴仓库地址：
+扩展管理器 → 安装扩展 → 粘贴地址：
 ```
 https://github.com/chidori-beni/ST-ChatPresetBind
 ```
