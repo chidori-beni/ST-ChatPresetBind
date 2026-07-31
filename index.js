@@ -1,16 +1,17 @@
 /**
  * ST-ChatPresetBind · 聊天预设绑定插件
  * Author: chidori
- * Version: 1.1.4
+ * Version: 1.1.5
  *
  * 新增：每个聊天可绑定多个配置快照，支持命名、设为默认、一键应用
+ * 1.1.5：提示词开关改为读写 oai_settings.prompt_order 数据源，不再依赖 DOM 渲染
  */
 
 'use strict';
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 const MODULE   = 'chat_preset_bind';
-const VERSION  = '1.1.4';
+const VERSION  = '1.1.5';
 const META_KEY = 'cpb_snapshots';   // 存快照列表（数组）
 const PANEL_ID = 'cpb_panel';
 const ENTRY_ID = 'cpb_menu_entry';
@@ -48,6 +49,82 @@ function uuidShort() {
 
 function formatTime(ts) {
     return new Date(ts).toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+// ─── 数据源读取（替代 DOM 抓取）───────────────────────────────────────────────
+
+function getOaiSettings() {
+    const c = ctx();
+    return c.chatCompletionSettings || window.oai_settings || null;
+}
+
+function getTextGenSettings() {
+    const c = ctx();
+    return c.textCompletionSettings || window.textgenerationwebui_settings || null;
+}
+
+function getApiType() {
+    const c = ctx();
+    return c.mainApi || c.main_api || window.main_api?.value || null;
+}
+
+/**
+ * 取当前生效的 prompt_order 数组（返回的是引用，可直接改）
+ * ST 结构：oai_settings.prompt_order = [{ character_id, order: [{identifier, enabled}] }]
+ * 全局排序策略使用 dummy id 100001
+ */
+function getLivePromptOrder() {
+    const oai = getOaiSettings();
+    if (!oai || !Array.isArray(oai.prompt_order) || !oai.prompt_order.length) return null;
+    const list = oai.prompt_order;
+    const charId = ctx().characterId;
+
+    let entry = list.find(e => Number(e.character_id) === 100001);
+    if (!entry && charId !== undefined && charId !== null) {
+        entry = list.find(e => String(e.character_id) === String(charId));
+    }
+    if (!entry) {
+        entry = list.reduce((a, b) => ((b.order?.length || 0) > (a.order?.length || 0) ? b : a), list[0]);
+    }
+    return Array.isArray(entry?.order) ? entry.order : null;
+}
+
+/** identifier → 显示名，方便快照里留个人类可读的记录 */
+function getPromptNameMap() {
+    const oai = getOaiSettings();
+    const map = {};
+    (oai?.prompts || []).forEach(p => { if (p?.identifier) map[p.identifier] = p.name || p.identifier; });
+    return map;
+}
+
+/** 只改图标外观，不触发 ST 的 click 处理（数据已单独写过了，避免二次翻转） */
+function syncPromptToggleIcons(order) {
+    order.forEach(({ identifier, enabled }) => {
+        let row = null;
+        try { row = document.querySelector(`[data-pm-identifier="${CSS.escape(identifier)}"]`); } catch { return; }
+        const toggle = row?.querySelector('.prompt-manager-toggle-action');
+        if (!toggle) return;
+        toggle.classList.toggle('fa-toggle-on', !!enabled);
+        toggle.classList.toggle('fa-toggle-off', !enabled);
+    });
+}
+
+/** 按 API 类型拿到对应的生成参数对象 */
+function getGenSettingsObject(apiType) {
+    const api = apiType || getApiType();
+    switch (api) {
+        case 'openai':
+        case 'claude':
+            return getOaiSettings();
+        case 'textgenerationwebui':
+            return getTextGenSettings();
+        case 'kobold':
+            return window.koboldai_settings || null;
+        case 'novel':
+            return window.nai_settings || null;
+        default:
+            return getOaiSettings();   // 中转站基本都走 chat completion
+    }
 }
 
 // ─── 预设切换 ─────────────────────────────────────────────────────────────────
@@ -105,25 +182,39 @@ function captureSnapshot(label) {
     const pm = context.getPresetManager ? context.getPresetManager() : null;
     const rawName = pm ? pm.getSelectedPresetName() : null;
     const presetName = rawName ? normalizePresetName(rawName) : null;
-    const apiType = context.main_api || (window.main_api?.value) || null;
+    const apiType = getApiType();
 
-    // 提示词开关（DOM toggle span）
+    // 提示词开关：优先读 oai_settings.prompt_order（真实数据源）
     let promptOrder = null;
     try {
-        const rows = document.querySelectorAll('[data-pm-identifier]');
-        if (rows.length > 0) {
-            promptOrder = [];
-            rows.forEach(row => {
-                const identifier = row.getAttribute('data-pm-identifier');
-                if (!identifier) return;
-                const toggle = row.querySelector('.prompt-manager-toggle-action');
-                const enabled = toggle ? toggle.classList.contains('fa-toggle-on') : true;
-                promptOrder.push({ identifier, enabled });
-            });
+        const live = getLivePromptOrder();
+        if (live && live.length) {
+            const nameMap = getPromptNameMap();
+            promptOrder = live.map(o => ({
+                identifier: o.identifier,
+                enabled: !!o.enabled,
+                name: nameMap[o.identifier],
+            }));
+        } else {
+            // 兜底：老路子扒 DOM（只在真的抓到多条时才认）
+            const rows = document.querySelectorAll('[data-pm-identifier]');
+            if (rows.length > 1) {
+                promptOrder = [];
+                rows.forEach(row => {
+                    const identifier = row.getAttribute('data-pm-identifier');
+                    if (!identifier) return;
+                    const toggle = row.querySelector('.prompt-manager-toggle-action');
+                    promptOrder.push({ identifier, enabled: toggle ? toggle.classList.contains('fa-toggle-on') : true });
+                });
+            }
+        }
+        if (!promptOrder || !promptOrder.length) {
+            promptOrder = null;
+            console.warn(`[${MODULE}] 未能读取提示词开关状态（prompt_order 为空）`);
         }
     } catch (e) { console.warn(`[${MODULE}] 捕获 promptOrder 失败:`, e); }
 
-    // 生成参数（暂存，实际效果有限）
+    // 生成参数
     let genSettings = null;
     try {
         const GEN_KEYS = [
@@ -131,12 +222,7 @@ function captureSnapshot(label) {
             'rep_pen','rep_pen_range','mirostat_mode','mirostat_tau','mirostat_eta',
             'temp','freq_pen','pres_pen','top_p_openai','max_context','openai_max_tokens',
         ];
-        const apiMap = {
-            openai: window.oai_settings, claude: window.oai_settings,
-            textgenerationwebui: window.textgenerationwebui_settings,
-            kobold: window.koboldai_settings, novel: window.nai_settings,
-        };
-        const src = (apiType && apiMap[apiType]) || {};
+        const src = getGenSettingsObject(apiType) || {};
         const obj = {};
         GEN_KEYS.forEach(k => { if (k in src) obj[k] = src[k]; });
         if (Object.keys(obj).length) genSettings = obj;
@@ -157,21 +243,6 @@ function captureSnapshot(label) {
 }
 
 // ─── 快照：恢复 ──────────────────────────────────────────────────────────────
-
-function waitForPromptManagerReady(expectedCount, callback, timeout = 5000) {
-    const interval = 150;
-    let elapsed = 0, lastCount = -1, stableCount = 0;
-    const timer = setInterval(() => {
-        const count = document.querySelectorAll('[data-pm-identifier]').length;
-        stableCount = (count === lastCount && count > 0) ? stableCount + 1 : 0;
-        lastCount = count;
-        if (stableCount >= 2 && (expectedCount <= 0 || Math.abs(count - expectedCount) <= 2)) {
-            clearInterval(timer); callback(); return;
-        }
-        elapsed += interval;
-        if (elapsed >= timeout) { clearInterval(timer); callback(); }
-    }, interval);
-}
 
 async function applySnapshot(snapshot) {
     if (!snapshot) return;
@@ -205,34 +276,30 @@ async function applySnapshot(snapshot) {
 
 function restorePromptOrderAndGen(snapshot) {
     if (snapshot.promptOrder?.length > 0) {
-        setTimeout(async () => {
+        // 切预设后 prompt_order 会被整体替换，留点缓冲
+        setTimeout(() => {
             try {
-                const pmList = document.getElementById('completion_prompt_manager_list');
-                let needCollapse = false;
-                if (!document.querySelector('[data-pm-identifier]')) {
-                    const toggle = document.querySelector('#completion_prompt_manager')
-                        ?.closest('.inline-drawer')
-                        ?.querySelector('.inline-drawer-toggle');
-                    if (toggle) { toggle.click(); needCollapse = true; await new Promise(r => setTimeout(r, 600)); }
+                const live = getLivePromptOrder();
+                if (!live) {
+                    console.warn(`[${MODULE}] 未取到 prompt_order，跳过提示词恢复`);
+                    return;
                 }
+                const wanted = new Map(snapshot.promptOrder.map(p => [p.identifier, !!p.enabled]));
                 let adjusted = 0;
-                snapshot.promptOrder.forEach(({ identifier, enabled }) => {
-                    const row = document.querySelector(`[data-pm-identifier="${CSS.escape(identifier)}"]`);
-                    const toggle = row?.querySelector('.prompt-manager-toggle-action');
-                    if (!toggle) return;
-                    if (toggle.classList.contains('fa-toggle-on') !== enabled) {
-                        toggle.click(); adjusted++;
-                    }
+                live.forEach(item => {
+                    if (!wanted.has(item.identifier)) return;
+                    const val = wanted.get(item.identifier);
+                    if (!!item.enabled !== val) { item.enabled = val; adjusted++; }
                 });
-                if (needCollapse) {
-                    await new Promise(r => setTimeout(r, 300));
-                    const toggle = document.querySelector('#completion_prompt_manager')
-                        ?.closest('.inline-drawer')?.querySelector('.inline-drawer-toggle');
-                    toggle?.click();
-                }
-                console.log(`[${MODULE}] 提示词开关恢复 ${adjusted} 项`);
+                const missing = snapshot.promptOrder.filter(
+                    p => !live.some(i => i.identifier === p.identifier)
+                ).length;
+
+                ctx().saveSettingsDebounced?.();
+                syncPromptToggleIcons(live);
+                console.log(`[${MODULE}] 提示词开关恢复 ${adjusted} 项` + (missing ? `，${missing} 项在当前预设中不存在` : ''));
             } catch (e) { console.warn(`[${MODULE}] 恢复 promptOrder 失败:`, e); }
-        }, 800);
+        }, 500);
     }
     if (snapshot.genSettings) {
         setTimeout(() => {
@@ -244,13 +311,7 @@ function restorePromptOrderAndGen(snapshot) {
 
 function restoreGenSettings(settings, apiType) {
     if (!settings) return;
-    const resolvedApi = apiType || ctx().main_api || window.main_api?.value;
-    const apiMap = {
-        openai: window.oai_settings, claude: window.oai_settings,
-        textgenerationwebui: window.textgenerationwebui_settings,
-        kobold: window.koboldai_settings, novel: window.nai_settings,
-    };
-    const target = resolvedApi && apiMap[resolvedApi];
+    const target = getGenSettingsObject(apiType);
     if (!target) return;
     let changed = false;
     Object.entries(settings).forEach(([key, val]) => {
